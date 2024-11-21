@@ -1,0 +1,216 @@
+import RPi.GPIO as GPIO
+import dht11
+import time
+import paho.mqtt.publish as publish  # taller de MQTT - librería paho
+
+# Configuración de GPIO
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+GPIO.cleanup()
+
+# Pines de los sensores conectados a la Raspberry
+DHT11_PIN = 4   # pin para el sensor DHT11
+PIR_PIN = 17    # pin para el sensor PIR
+HUMO_PIN = 27   # pin para el sensor de humo
+VIBRACION_PIN = 22  # pin para el sensor de vibración KY-031
+
+# Iniciar el sensor de temperatura y humedad
+sensor_dht11 = dht11.DHT11(pin=DHT11_PIN)
+
+# Configuración de pines
+GPIO.setup(PIR_PIN, GPIO.IN)  # Movimiento
+GPIO.setup(HUMO_PIN, GPIO.IN)  # Humo
+GPIO.setup(VIBRACION_PIN, GPIO.IN)  # Vibración
+
+# Información - Seguimiento taller de MQTT
+channel_ID = "2683989"  # ID DEL CANAL
+mqtt_host = "mqtt3.thingspeak.com"
+mqtt_client_ID = "ACAsIgwLHx86NSkuNgwtKhI"  # ID del dispositivo
+mqtt_username = "ACAsIgwLHx86NSkuNgwtKhI"  # ID del dispositivo
+mqtt_password = "3oPcCt+B2aESprSsQMdOPXMN"  # Password del dispositivo
+t_transport = "tcp"
+t_port = 1883
+topic = "channels/" + channel_ID + "/publish"
+
+
+# Información - Seguimiento taller de MQTT
+channel_ID2 = "2756001"  # ID DEL CANAL
+mqtt_host2 = "mqtt3.thingspeak.com"
+mqtt_client_ID2 = "PAEgADweLhkKARQSJxUzBzg"  # ID del dispositivo
+mqtt_username2 =  "PAEgADweLhkKARQSJxUzBzg"  # ID del dispositivo
+mqtt_password2 = "VUxVm+jctY+XMcBz56qaZTXe"  # Password del dispositivo
+t_transport2 = "tcp"
+t_port2 = 1883
+topic2 = "channels/" + channel_ID2 + "/publish"
+
+# Listas para almacenar los datos de temperatura y humedad
+temperaturas = []
+humedades = []
+contador_lecturas = 0  # Contador para manejar el tiempo de 10 minutos
+
+# Umbral para temperatura y alerta
+UMBRAL_TEMPERATURA = 25.0  # Umbral para la temperatura
+alerta = 0  # Estado de la alerta (0: sin alerta, 1: alerta activa)
+
+try:
+    while True:
+        # *Lectura de temperatura y humedad cada 15 segundos*
+        resultado_dht11 = sensor_dht11.read()
+        if resultado_dht11.is_valid():
+            temperatura = resultado_dht11.temperature
+            humedad = resultado_dht11.humidity
+
+            # Verificar si la temperatura supera el umbral
+            if temperatura > UMBRAL_TEMPERATURA:
+                print(f"[EMERGENCIA] Temperatura detectada por encima del umbral: {temperatura:.1f} C")
+                
+                # Analizar los 2 datos siguientes
+                siguiente_temperaturas = []
+                for _ in range(2):  # Leer los siguientes 2 datos
+                    time.sleep(15)  # Esperar 15 segundos para la siguiente lectura
+                    resultado_siguiente = sensor_dht11.read()
+                    if resultado_siguiente.is_valid():
+                        siguiente_temperaturas.append(resultado_siguiente.temperature)
+
+                # Verificar las 3 lecturas consecutivas
+                if all(t > UMBRAL_TEMPERATURA for t in [temperatura] + siguiente_temperaturas):
+                    alerta = 1  # Confirmar alerta
+                    print("[ALERTA] Se confirma una situación de emergencia con 3 lecturas consecutivas.")
+                     # *Enviar la temperatura que activó la alarma con el ID del sensor*
+                    payload = f"field6={alerta}"
+                    payload2 = f"field1=sensor_001:{temperatura:.1f}"
+                    try:
+                        print(f"Enviando alerta: {payload}")
+                        publish.single(
+                            topic,
+                            payload,
+                            hostname=mqtt_host,
+                            transport=t_transport,
+                            port=t_port,
+                            client_id=mqtt_client_ID,
+                            auth={'username': mqtt_username, 'password': mqtt_password}
+                        )
+                        
+                        
+                        print(f"Enviando alerta: {payload2}")
+                        publish.single(
+                            topic2,
+                            payload2,
+                            hostname=mqtt_host2,
+                            transport=t_transport2,
+                            port=t_port2,
+                            client_id=mqtt_client_ID2,
+                            auth={'username': mqtt_username2, 'password': mqtt_password2}
+                        )
+                        
+                    except Exception as e:
+                        print(f"Error enviando alerta: {e}")
+
+                    # *Reiniciar el ciclo de 10 minutos*
+                    temperaturas = []
+                    humedades = []
+                    contador_lecturas = 0
+                    alerta = 0  # Reiniciar estado de alerta
+                    continue  # Saltar al inicio del bucle principal
+
+            # Agregar valores a las listas
+            temperaturas.append(temperatura)
+            humedades.append(humedad)
+
+            # Mostrar datos en consola
+            print(f"[{contador_lecturas * 15} seg] Temperatura: {temperatura:.1f} C, Humedad: {humedad:.1f} %")
+        else:
+            print(f"[{contador_lecturas * 15} seg] Error leyendo DHT11")
+            temperaturas.append(None)
+            humedades.append(None)
+
+        # *Envío de datos de otros sensores*
+        # Leer sensores de movimiento, humo y vibración
+        estado_pir = GPIO.input(PIR_PIN)
+        estado_humo = GPIO.input(HUMO_PIN)
+        estado_vibracion = GPIO.input(VIBRACION_PIN)
+
+        # Enviar datos de PIR, humo, vibración y alerta a ThingSpeak
+        payload = (
+            f"field3=sensor_003:{estado_humo}&"
+            f"field4=sensor_004:{estado_pir}&"
+            f"field5=sensor_005:{estado_vibracion}&"
+            f"field6={alerta}"
+        )
+        try:
+            print(f"Enviando datos de sensores (cada 15 segundos): {payload}")
+            publish.single(
+                topic,
+                payload,
+                hostname=mqtt_host,
+                transport=t_transport,
+                port=t_port,
+                client_id=mqtt_client_ID,
+                auth={'username': mqtt_username, 'password': mqtt_password}
+            )
+        except Exception as e:
+            print(f"Error enviando datos de sensores: {e}")
+
+        # Reiniciar la alerta si ya se envió
+        alerta = 0
+
+        # Incrementar contador de lecturas (4 lecturas por minuto)
+        contador_lecturas += 1
+
+        # *Promedio de temperatura y humedad cada 10 minutos*
+        if contador_lecturas == 40:  # Cada 10 minutos (40 lecturas de 15 segundos cada una)
+            # Mostrar todos los valores obtenidos en los últimos 10 minutos
+            print(f"\nValores de temperatura capturados en 10 minutos: {temperaturas}")
+            print(f"Valores de humedad capturados en 10 minutos: {humedades}")
+
+            # Calcular promedios ignorando valores None
+            temperaturas_validas = [temp for temp in temperaturas if temp is not None]
+            humedades_validas = [hum for hum in humedades if hum is not None]
+
+            if temperaturas_validas:
+                promedio_temperatura = sum(temperaturas_validas) / len(temperaturas_validas)
+            else:
+                promedio_temperatura = None
+
+            if humedades_validas:
+                promedio_humedad = sum(humedades_validas) / len(humedades_validas)
+            else:
+                promedio_humedad = None
+
+            # Mostrar y enviar los promedios
+            if promedio_temperatura is not None and promedio_humedad is not None:
+                print(f"Promedio de temperatura en 10 minutos: {promedio_temperatura:.1f} C")
+                print(f"Promedio de humedad en 10 minutos: {promedio_humedad:.1f} %")
+                payload12 = (
+                    f"field1=sensor_001:{promedio_temperatura:.1f}&"
+                    f"field2=sensor_001:{promedio_humedad:.1f}"
+                )
+            else:
+                print("No se pudo calcular el promedio, datos inválidos.")
+                payload12 = "field1=sensor_001:-1&field2=sensor_001:-1"
+
+            try:
+                print(f"Enviando promedios (cada 10 minutos): {payload12}")
+                publish.single(
+                    topic2,
+                    payload12,
+                    hostname=mqtt_host2,
+                    transport=t_transport2,
+                    port=t_port2,
+                    client_id=mqtt_client_ID2,
+                    auth={'username': mqtt_username2, 'password': mqtt_password2}
+                )
+            except Exception as e:
+                print(f"Error enviando promedios: {e}")
+
+            # Reiniciar listas y contador de lecturas
+            temperaturas = []
+            humedades = []
+            contador_lecturas = 0
+
+        # Esperar 15 segundos antes de la siguiente iteración
+        time.sleep(15)
+
+except KeyboardInterrupt:
+    print("Limpieza de GPIO...")
+    GPIO.cleanup()
